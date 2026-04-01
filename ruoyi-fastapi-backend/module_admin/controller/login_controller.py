@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Optional
 
 import jwt
 from fastapi import Depends, Request, Response
@@ -168,14 +168,37 @@ async def register_user(
     description='用于用户退出登录',
     response_model=ResponseBaseModel,
 )
-async def logout(request: Request, token: Annotated[str | None, Depends(oauth2_scheme)]) -> Response:
-    payload = jwt.decode(
-        token, JwtConfig.jwt_secret_key, algorithms=[JwtConfig.jwt_algorithm], options={'verify_exp': False}
-    )
+async def logout(request: Request, token: Annotated[Optional[str], Depends(oauth2_scheme)] = None) -> Response:
+    # --- 新增检查 ---
+    if not token:
+        logger.warning("Logout attempt without a token in Authorization header.")
+        # 可以选择抛出 401 错误，要求客户端携带有效 token
+        # raise HTTPException(status_code=401, detail="No token provided for logout.")
+        # 或者，即使没有 token 也返回成功，表示用户已经处于未登录状态
+        return ResponseUtil.success(msg='Logout successful or no token provided.')
+    # --- 检查结束 ---
+
+    try:
+        payload = jwt.decode(
+            token, JwtConfig.jwt_secret_key, algorithms=[JwtConfig.jwt_algorithm], options={'verify_exp': False}
+        )
+    except jwt.PyJWTError as e: # 捕获所有 PyJWT 相关错误
+        logger.error(f"Error decoding JWT during logout: {e}")
+        # 如果 token 格式错误或无效，也可以视为登出失败或成功，取决于业务逻辑
+        # raise HTTPException(status_code=401, detail="Invalid token.")
+        return ResponseUtil.success(msg='Logout successful or token was invalid.')
+
     if AppConfig.app_same_time_login:
         token_id: str = payload.get('session_id')
     else:
         token_id: str = payload.get('user_id')
+
+    # 确保 token_id 存在，以防 payload 中缺失
+    if not token_id:
+        logger.error("Token payload missing 'session_id' or 'user_id' for logout.")
+        # raise HTTPException(status_code=500, detail="Invalid token structure.")
+        return ResponseUtil.success(msg='Logout successful or token had invalid structure.')
+
     await LoginService.logout_services(request, token_id)
     logger.info('退出成功')
 
